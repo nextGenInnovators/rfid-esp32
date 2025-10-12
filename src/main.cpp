@@ -21,6 +21,7 @@ const char* ssid = "16 Burns Road Wifi";
 const char* password = "Jordaan1234567";
 // const char* serverUrl = "https://api.sagestudy.co.za/api/v1/health/"; 
 const char* serverUrl = "https://api.sagestudy.co.za/api/v1/attendance/addAttendance"; 
+const char* roomName = "Lecture 4"; 
 
 // Learn more about using SPI/I2C or check the pin assigment for your board: https://github.com/OSSLibraries/Arduino_MFRC522v2#pin-layout
 MFRC522DriverPinSimple ss_pin(5);
@@ -112,7 +113,7 @@ void listenForTags() {
   showTextOnDisplayReplace(displayText, 2, true);
   useBuzzer();
 
-  makeHttpPostRequest(studentNumber);
+  makeHttpPostRequest(studentNumber, roomName);
   
   // Halt communication with the card
   mfrc522.PICC_HaltA();
@@ -169,12 +170,12 @@ void makeHttpGetRequest() {
   }
 }
 
-void makeHttpPostRequest(const String& userId) {
+void makeHttpPostRequest(const String& studentNumber, const String& roomName) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
 
-    // Add userId as a query parameter
-    String urlWithParams = String(serverUrl) + "?studentNumber=" + userId;
+    // Add studentNumber and roomName as query parameters
+    String urlWithParams = String(serverUrl) + "?studentNumber=" + studentNumber + "&roomName=" + roomName;
     http.begin(urlWithParams);
 
     int httpCode = http.POST("");  // Send POST request with empty body
