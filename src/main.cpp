@@ -15,12 +15,14 @@
 #define BUZZER_PIN 25
 
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
-// Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 const char* ssid = "Galaxy A30s4929";
 const char* password = "amzachaane";
-// const char* serverUrl = "https://api.sagestudy.co.za/api/v1/health/"; 
-const char* serverUrl = "https://api.sagestudy.co.za/api/v1/attendance/addAttendance"; 
+// const char* ssid = "VC-1012-9086";
+// const char* password = "Jbj52fjnH";
+const char* serverUrl = "http://192.168.216.95:8080/api/v1/attendance/addAttendance"; 
+// const char* serverUrl = "https://api.sagestudy.co.za/api/v1/attendance/addAttendance"; 
 const char* roomName = "Lecture 4"; 
 
 // Learn more about using SPI/I2C or check the pin assigment for your board: https://github.com/OSSLibraries/Arduino_MFRC522v2#pin-layout
@@ -35,7 +37,7 @@ MFRC522::MIFARE_Key key;
 byte studentNumberBlockAddress = 1;
 byte studentNameBlockAddress = 2;
 // byte newBlockData[17] = {"402308195       "};
-//byte newBlockData[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};   // CLEAR DATA
+// byte newBlockData[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};   // CLEAR DATA
 byte bufferblocksize = 18;
 byte studentNumberBlockDataRead[18];
 byte studentNameBlockDataRead[18];
@@ -44,11 +46,14 @@ byte studentNameBlockDataRead[18];
 
 bool connectToWiFi();
 void makeHttpGetRequest();
+String urlencode(String str);
+void makeHttpPostRequest(const String& studentNumber, const String& roomName);
 void listenForTags();
 void readFromBlock(byte blockAddress, byte* blockDataRead, byte bufferBlockSize);
 void writeToBlock(byte blockAddress, byte* newBlockData);
 void blinkBuiltInLED();
 void useBuzzer();
+String trimString(String str);
 void showTextOnDisplayReplace(String text, int textSize, bool clearDisplay);
 String turnByteToString(byte* byte);
 String shortenStringToFitScreen(String text);
@@ -60,8 +65,8 @@ void setup() {
   while (!Serial);       // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4).
   
   pinMode(LED_BUILTIN, OUTPUT);
-  // pinMode(BUZZER_PIN, OUTPUT);
-  // digitalWrite(BUZZER_PIN, HIGH);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, HIGH);
   
   mfrc522.PCD_Init();    // Init MFRC522 board.
   // Serial.println(F("Warning: this example overwrites a block in your card, use with care!"));
@@ -77,13 +82,13 @@ void setup() {
     while (1);
   }
 
-  // if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
-  //   Serial.println(F("SSD1306 allocation failed"));
-  //   for(;;);
-  // }
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;);
+  }
 
   delay(2000);
-  // showTextOnDisplayReplace("Scan card/tag...", 2, true);
+  showTextOnDisplayReplace("Scan card/tag...", 2, true);
 }
 
 void loop() {
@@ -99,8 +104,8 @@ void listenForTags() {
 
   // Display card UID
   Serial.print("----------------\nCard UID: ");
-  // MFRC522Debug::PrintUID(Serial, (mfrc522.uid)); // use in arduino IDE
-  MFRC522Debug::PICC_DumpDetailsToSerial(mfrc522, Serial, &(mfrc522.uid)); // use in PlatformIO
+  MFRC522Debug::PrintUID(Serial, (mfrc522.uid)); // use in arduino IDE
+  // MFRC522Debug::PICC_DumpDetailsToSerial(mfrc522, Serial, &(mfrc522.uid)); // use in PlatformIO
   Serial.println();
 
   readFromBlock(studentNumberBlockAddress, studentNumberBlockDataRead, bufferblocksize);
@@ -111,8 +116,10 @@ void listenForTags() {
 
 
   String displayText = studentNumber + "\n" + studentName;
-  // showTextOnDisplayReplace(displayText, 2, true);
-  // useBuzzer();
+  showTextOnDisplayReplace(displayText, 2, true);
+  useBuzzer();
+
+  // writeToBlock(studentNumberBlockAddress, newBlockData);
 
   makeHttpPostRequest(studentNumber, roomName);
   
@@ -189,6 +196,7 @@ void makeHttpPostRequest(const String& studentNumber, const String& roomName) {
       String payload = http.getString();
       Serial.print("Response: ");
       Serial.println(payload);
+      if(payload.length() > 0) showTextOnDisplayReplace(payload, 1, true);
     } else {
       Serial.print("POST request failed. Error: ");
       Serial.println(http.errorToString(httpCode).c_str());
@@ -285,6 +293,8 @@ void writeToBlock(byte blockAddress, byte* newBlockData) {
   } else {
     Serial.print("Data written successfully in block: ");
     Serial.println(blockAddress);
+    showTextOnDisplayReplace("Data written successfully in block: " + String(blockAddress), 1, true);
+
   }
 
 }
@@ -302,17 +312,17 @@ void useBuzzer() {
   delay(100);
 }
 
-// void showTextOnDisplayReplace(String text, int textSize, bool clearDisplay) {
-//   if(clearDisplay) {
-//     display.clearDisplay();
-//   }
-//   display.setTextSize(textSize);
-//   display.setTextColor(WHITE);
-//   display.setCursor(0, 10);
-//   // Display static text
-//   display.println(text);
-//   display.display(); 
-// }
+void showTextOnDisplayReplace(String text, int textSize, bool clearDisplay) {
+  if(clearDisplay) {
+    display.clearDisplay();
+  }
+  display.setTextSize(textSize);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 10);
+  // Display static text
+  display.println(text);
+  display.display(); 
+}
 
 String turnByteToString(byte* byte) {
   String text = "";
