@@ -15,10 +15,10 @@
 #define BUZZER_PIN 25
 
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+// Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-const char* ssid = "16 Burns Road Wifi";
-const char* password = "Jordaan1234567";
+const char* ssid = "Galaxy A30s4929";
+const char* password = "amzachaane";
 // const char* serverUrl = "https://api.sagestudy.co.za/api/v1/health/"; 
 const char* serverUrl = "https://api.sagestudy.co.za/api/v1/attendance/addAttendance"; 
 const char* roomName = "Lecture 4"; 
@@ -60,8 +60,8 @@ void setup() {
   while (!Serial);       // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4).
   
   pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, HIGH);
+  // pinMode(BUZZER_PIN, OUTPUT);
+  // digitalWrite(BUZZER_PIN, HIGH);
   
   mfrc522.PCD_Init();    // Init MFRC522 board.
   // Serial.println(F("Warning: this example overwrites a block in your card, use with care!"));
@@ -77,13 +77,13 @@ void setup() {
     while (1);
   }
 
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
-    Serial.println(F("SSD1306 allocation failed"));
-    for(;;);
-  }
+  // if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
+  //   Serial.println(F("SSD1306 allocation failed"));
+  //   for(;;);
+  // }
 
   delay(2000);
-  showTextOnDisplayReplace("Scan card/tag...", 2, true);
+  // showTextOnDisplayReplace("Scan card/tag...", 2, true);
 }
 
 void loop() {
@@ -106,12 +106,13 @@ void listenForTags() {
   readFromBlock(studentNumberBlockAddress, studentNumberBlockDataRead, bufferblocksize);
   readFromBlock(studentNameBlockAddress, studentNameBlockDataRead, bufferblocksize);
 
-  String studentNumber = shortenStringToFitScreen(turnByteToString(studentNumberBlockDataRead));
-  String studentName = shortenStringToFitScreen(turnByteToString(studentNameBlockDataRead));
+  String studentNumber = trimString(shortenStringToFitScreen(turnByteToString(studentNumberBlockDataRead)));
+  String studentName = trimString(shortenStringToFitScreen(turnByteToString(studentNameBlockDataRead)));
+
 
   String displayText = studentNumber + "\n" + studentName;
-  showTextOnDisplayReplace(displayText, 2, true);
-  useBuzzer();
+  // showTextOnDisplayReplace(displayText, 2, true);
+  // useBuzzer();
 
   makeHttpPostRequest(studentNumber, roomName);
   
@@ -175,7 +176,8 @@ void makeHttpPostRequest(const String& studentNumber, const String& roomName) {
     HTTPClient http;
 
     // Add studentNumber and roomName as query parameters
-    String urlWithParams = String(serverUrl) + "?studentNumber=" + studentNumber + "&roomName=" + roomName;
+    String urlWithParams = String(serverUrl) + "?studentNumber=" + urlencode(studentNumber) + "&roomName=" + urlencode(roomName);
+    Serial.println(urlWithParams);
     http.begin(urlWithParams);
 
     int httpCode = http.POST("");  // Send POST request with empty body
@@ -197,6 +199,41 @@ void makeHttpPostRequest(const String& studentNumber, const String& roomName) {
     Serial.println("WiFi not connected");
   }
 }
+
+String urlencode(String str) {
+  String encoded = "";
+  char c;
+  char code0;
+  char code1;
+  char code2;
+  for (int i = 0; i < str.length(); i++) {
+    c = str.charAt(i);
+    if (isalnum(c)) {
+      encoded += c;
+    } else {
+      encoded += '%';
+      code1 = (c >> 4) & 0xF;
+      if (code1 > 9) code1 += 'A' - 10;
+      else code1 += '0';
+      encoded += code1;
+      code2 = c & 0xF;
+      if (code2 > 9) code2 += 'A' - 10;
+      else code2 += '0';
+      encoded += code2;
+    }
+  }
+  return encoded;
+}
+
+String trimString(String str) {
+  int start = 0;
+  while (start < str.length() && isspace(str.charAt(start))) start++;
+  int end = str.length() - 1;
+  while (end >= 0 && isspace(str.charAt(end))) end--;
+  if (end < start) return "";
+  return str.substring(start, end + 1);
+}
+
 
 
 
@@ -265,17 +302,17 @@ void useBuzzer() {
   delay(100);
 }
 
-void showTextOnDisplayReplace(String text, int textSize, bool clearDisplay) {
-  if(clearDisplay) {
-    display.clearDisplay();
-  }
-  display.setTextSize(textSize);
-  display.setTextColor(WHITE);
-  display.setCursor(0, 10);
-  // Display static text
-  display.println(text);
-  display.display(); 
-}
+// void showTextOnDisplayReplace(String text, int textSize, bool clearDisplay) {
+//   if(clearDisplay) {
+//     display.clearDisplay();
+//   }
+//   display.setTextSize(textSize);
+//   display.setTextColor(WHITE);
+//   display.setCursor(0, 10);
+//   // Display static text
+//   display.println(text);
+//   display.display(); 
+// }
 
 String turnByteToString(byte* byte) {
   String text = "";
