@@ -9,6 +9,8 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "time.h"
+#include <Preferences.h>
+
 
 #define LED_BUILTIN 2
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
@@ -18,6 +20,8 @@
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
+Preferences preferences;
+
 // WiFi credentials
 const char* ssid = "Galaxy A30s4929";
 const char* password = "amzachaane";
@@ -25,8 +29,8 @@ const char* password = "amzachaane";
 // const char* password = "Jbj52fjnH";
 
 // Server URLs
-const char* serverUrl = "http://192.168.203.95:8080/api/v1/attendance/addAttendance"; 
-// const char* serverUrl = "https://api.sagestudy.co.za/api/v1/attendance/addAttendance"; 
+const char* serverPostUrl = "http://192.168.203.95:8080/api/v1/attendance/addAttendance"; 
+const char* serverGetUrl = "http://192.168.203.95:8080/api/v1/health/"; 
 
 const char* roomName = "Lecture 4"; 
 
@@ -66,6 +70,9 @@ void showTextOnDisplayReplace(String text, int textSize, bool clearDisplay);
 String turnByteToString(byte* byte);
 String shortenStringToFitScreen(String text);
 String getOffsetDateTimeString();
+void saveFailedPost(const String& studentNumber, const String& roomName, const String& timestamp);
+void retryFailedPosts();
+bool isServerReachable();
 // ############################################
 
 void setup() {
@@ -91,6 +98,15 @@ void setup() {
     while (1);
   }
 
+  // --- Add WiFi event for retrying failed posts ---
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
+      if(event == IP_EVENT_STA_GOT_IP){
+          if(isServerReachable()) {  // simple GET to server
+              retryFailedPosts();
+          }
+      }
+  });
+
   // Init and get the time
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
@@ -101,6 +117,9 @@ void setup() {
 
   delay(2000);
   showTextOnDisplayReplace("Scan card/tag...", 2, true);
+
+  // Initialize preferences
+  preferences.begin("failed_posts", false); // namespace "failed_posts"
 }
 
 void loop() {
@@ -165,7 +184,7 @@ bool connectToWiFi() {
 void makeHttpGetRequest() {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    http.begin(serverUrl);
+    http.begin(serverGetUrl);
     int httpCode = http.GET();
     if (httpCode > 0) {
       String payload = http.getString();
@@ -182,38 +201,68 @@ void makeHttpGetRequest() {
 }
 
 void makeHttpPostRequest(const String& studentNumber, const String& roomName) {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
 
-    // Get current timestamp in OffsetDateTime format
-    String timestamp = getOffsetDateTimeString();
+        String timestamp = getOffsetDateTimeString();
+        String urlWithParams = String(serverPostUrl) + 
+                               "?studentNumber=" + urlencode(studentNumber) + 
+                               "&roomName=" + urlencode(roomName) + 
+                               "&timestamp=" + urlencode(timestamp);
+        Serial.println(urlWithParams);
+        http.begin(urlWithParams);
 
-    // Build URL with studentNumber, roomName, and timestamp as query parameters
-    String urlWithParams = String(serverUrl) + 
-                           "?studentNumber=" + urlencode(studentNumber) + 
-                           "&roomName=" + urlencode(roomName) + 
-                           "&timestamp=" + urlencode(timestamp);
-    Serial.println(urlWithParams);
-    http.begin(urlWithParams);
+        int httpCode = http.POST("");  // Send POST request with empty body
+        String payload = http.getString();
 
-    int httpCode = http.POST("");  // Send POST request with empty body
-    if (httpCode > 0) {
-      Serial.print("HTTP Response code: ");
-      Serial.println(httpCode);
-      String payload = http.getString();
-      Serial.print("Response: ");
-      Serial.println(payload);
-      if(payload.length() > 0) showTextOnDisplayReplace(payload, 1, true);
+        if(payload.length() > 0) showTextOnDisplayReplace(payload, 1, true);
+
+        if (httpCode > 0 && httpCode == 200) {
+            Serial.print("HTTP Response code: ");
+            Serial.println(httpCode);
+            Serial.print("Response: ");
+            Serial.println(payload);
+        } else {
+            Serial.print("POST request failed. Error: ");
+            Serial.println(http.errorToString(httpCode).c_str());
+
+            // Only save failed post if payload does NOT contain known exceptions
+            if(payload != "Attendance already recorded for this student within the last 30 minutes." &&
+               payload != "Invalid student number." &&
+               payload.indexOf("User not found for student number") < 0 &&
+               payload != "Unable to return student projected data." &&
+               payload != "Room not found in database.") 
+            { 
+                saveFailedPost(studentNumber, roomName, timestamp); 
+            }
+        }
+
+        http.end();
     } else {
-      Serial.print("POST request failed. Error: ");
-      Serial.println(http.errorToString(httpCode).c_str());
+        Serial.println("WiFi not connected");
+        saveFailedPost(studentNumber, roomName, getOffsetDateTimeString());
     }
-
-    http.end();  // Free resources
-  } else {
-    Serial.println("WiFi not connected");
-  }
 }
+
+bool isServerReachable() {
+    if (WiFi.status() != WL_CONNECTED) return false;
+
+    HTTPClient http;
+    http.begin(serverGetUrl);  // your GET URL
+    int httpCode = http.GET();
+    http.end();
+
+    if (httpCode == 200) {
+        Serial.println("Server reachable!");
+        return true;
+    } else {
+        Serial.print("Server not reachable. HTTP code: ");
+        Serial.println(httpCode);
+        return false;
+    }
+}
+
+
 
 
 String urlencode(String str) {
@@ -352,3 +401,89 @@ String getOffsetDateTimeString() {
 
   return String(isoTime);
 }
+
+
+void saveFailedPost(const String& studentNumber, const String& roomName, const String& timestamp) {
+    // Use student + room + timestamp as unique key
+    String key = studentNumber + "_" + roomName + "_" + timestamp;
+    String value = studentNumber + "," + roomName + "," + timestamp;
+
+    // Save the failed post itself
+    preferences.putString(key.c_str(), value); 
+
+    // Retrieve the existing list of failed keys
+    String keys = preferences.getString("failed_keys", "");
+
+    // Add this key to the list only if it's not already there
+    if (keys.indexOf(key) == -1) {
+        if (keys.length() > 0) keys += ",";
+        keys += key;
+        preferences.putString("failed_keys", keys);
+    }
+
+    Serial.println("Saved failed post to flash: " + value);
+    Serial.println("Updated failed_keys list: " + keys);
+}
+
+
+
+
+
+void retryFailedPosts() {
+    String keys = preferences.getString("failed_keys", "");
+    if (keys.length() == 0) {
+        Serial.println("No failed posts to retry.");
+        return;
+    }
+
+    Serial.println("Retrying failed posts...");
+    int start = 0;
+    String newKeys = "";  // Rebuild list of posts that still failed
+
+    while (start < keys.length()) {
+        int comma = keys.indexOf(',', start);
+        if (comma == -1) comma = keys.length();
+
+        String key = keys.substring(start, comma);
+        String value = preferences.getString(key.c_str(), "");
+
+        if (value.length() > 0) {
+            int firstComma = value.indexOf(',');
+            int secondComma = value.indexOf(',', firstComma + 1);
+            String studentNumber = value.substring(0, firstComma);
+            String roomName = value.substring(firstComma + 1, secondComma);
+            String timestamp = value.substring(secondComma + 1);
+
+            Serial.println("Retrying: " + value);
+
+            // Try to send again
+            HTTPClient http;
+            String urlWithParams = String(serverPostUrl) + 
+                                   "?studentNumber=" + urlencode(studentNumber) + 
+                                   "&roomName=" + urlencode(roomName) + 
+                                   "&timestamp=" + urlencode(timestamp);
+            http.begin(urlWithParams);
+            int httpCode = http.POST("");
+            http.end();
+
+            if (httpCode == 200) {
+                Serial.println("Retry successful for key: " + key);
+                preferences.remove(key.c_str());
+            } else {
+                Serial.println("Retry failed again for key: " + key);
+                // Keep this one for next retry
+                if (newKeys.length() > 0) newKeys += ",";
+                newKeys += key;
+            }
+        }
+
+        start = comma + 1;
+    }
+
+    // Save only those that still failed
+    preferences.putString("failed_keys", newKeys);
+    Serial.println("Retry process complete.");
+}
+
+
+
