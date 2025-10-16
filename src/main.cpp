@@ -22,6 +22,11 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 Preferences preferences;
 
+static bool retried = false;
+static bool wifiWasConnected = false;
+static bool serverWasReachable = false;
+static bool timeConfigured = false;
+
 // WiFi credentials
 const char* ssid = "Galaxy A30s4929";
 const char* password = "amzachaane";
@@ -29,8 +34,8 @@ const char* password = "amzachaane";
 // const char* password = "Jbj52fjnH";
 
 // Server URLs
-const char* serverPostUrl = "http://192.168.203.95:8080/api/v1/attendance/addAttendance"; 
-const char* serverGetUrl = "http://192.168.203.95:8080/api/v1/health/"; 
+const char* serverPostUrl = "https://api.sagestudy.co.za/api/v1/attendance/addAttendance"; 
+const char* serverGetUrl = "https://api.sagestudy.co.za/api/v1/health/"; 
 
 const char* roomName = "Lecture 4"; 
 
@@ -73,6 +78,9 @@ String getOffsetDateTimeString();
 void saveFailedPost(const String& studentNumber, const String& roomName, const String& timestamp);
 void retryFailedPosts();
 bool isServerReachable();
+void clearAllFailedPosts();
+void configureTimeIfNeeded();
+void attemptWiFiReconnection();
 // ############################################
 
 void setup() {
@@ -84,7 +92,7 @@ void setup() {
   digitalWrite(BUZZER_PIN, HIGH);
   
   mfrc522.PCD_Init();    // Init MFRC522 board.
-  // Serial.println(F("Warning: this example overwrites a block in your card, use with care!"));
+  Serial.println("RFID Attendance System Starting...");
   Serial.println("Scan a card/tag...");
  
   // Prepare key - all keys are set to FFFFFFFFFFFF at chip delivery from the factory.
@@ -92,39 +100,132 @@ void setup() {
     key.keyByte[i] = 0xFF;
   }
 
-  // WiFi connection
-  if (!connectToWiFi()) {
-    Serial.println("Check credentials or hardware.");
-    while (1);
-  }
-
-  // --- Add WiFi event for retrying failed posts ---
-  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
-      if(event == IP_EVENT_STA_GOT_IP){
-          if(isServerReachable()) {  // simple GET to server
-              retryFailedPosts();
-          }
-      }
-  });
-
-  // Init and get the time
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-
+  // Initialize display first
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
     Serial.println(F("SSD1306 allocation failed"));
     for(;;);
   }
-
-  delay(2000);
-  showTextOnDisplayReplace("Scan card/tag...", 2, true);
+  delay(1000);
+  showTextOnDisplayReplace("Starting...", 2, true);
 
   // Initialize preferences
-  preferences.begin("failed_posts", false); // namespace "failed_posts"
+  preferences.begin("failed_posts", false);
+  int savedCount = preferences.getInt("count", 0);
+  preferences.end();
+  
+  Serial.print("Found ");
+  Serial.print(savedCount);
+  Serial.println(" saved posts in flash memory");
+
+  // Try to connect to WiFi with timeout
+  Serial.println("Attempting to connect to WiFi...");
+  showTextOnDisplayReplace("Connecting\nWiFi...", 2, true);
+  
+  if (connectToWiFi()) {
+    wifiWasConnected = true;
+    Serial.println("WiFi connected successfully!");
+    showTextOnDisplayReplace("WiFi OK!", 2, true);
+    delay(1000);
+    
+    // Configure time
+    configureTimeIfNeeded();
+    
+  } else {
+    wifiWasConnected = false;
+    Serial.println("WiFi connection failed. Proceeding in OFFLINE mode.");
+    Serial.println("System will save all scans to flash memory.");
+    showTextOnDisplayReplace("OFFLINE\nMode", 2, true);
+    delay(2000);
+  }
+
+  // --- Add WiFi event handlers ---
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
+    switch(event) {
+      case WIFI_EVENT_STA_CONNECTED:
+        Serial.println("Wi-Fi connected to AP");
+        break;
+
+      case WIFI_EVENT_STA_DISCONNECTED:
+        Serial.println("Wi-Fi disconnected from AP");
+        retried = false;
+        wifiWasConnected = false;
+        serverWasReachable = false;
+        
+        // Attempt to reconnect
+        Serial.println("Will attempt to reconnect to WiFi...");
+        break;
+
+      case IP_EVENT_STA_GOT_IP:
+        Serial.print("Wi-Fi got IP: ");
+        Serial.println(WiFi.localIP());
+        wifiWasConnected = true;
+        retried = false;
+        
+        // Configure time if not already done
+        configureTimeIfNeeded();
+        break;
+
+      default:
+        break;
+    }
+  });
+
+  showTextOnDisplayReplace("Scan card/\ntag...", 2, true);
+  Serial.println("\n=== System Ready ===");
+  Serial.println("Waiting for RFID cards...\n");
 }
 
 void loop() {
   listenForTags();
-  Serial.println(getOffsetDateTimeString()); // Print timestamp in OffsetDateTime format
+
+  // Periodic connectivity and retry check every 10 seconds
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck > 10000) {
+    lastCheck = millis();
+
+    // Check WiFi status
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!wifiWasConnected) {
+            Serial.println("WiFi reconnected!");
+            wifiWasConnected = true;
+            retried = false;
+            configureTimeIfNeeded(); // Configure time when WiFi comes back
+        }
+
+        // Check server reachability
+        bool serverReachable = isServerReachable();
+        
+        if (serverReachable) {
+            if (!serverWasReachable) {
+                Serial.println("Server became reachable!");
+                serverWasReachable = true;
+            }
+            
+            // Retry failed posts if we haven't already
+            if (!retried) {
+                Serial.println("Server reachable, retrying failed posts...");
+                retryFailedPosts();
+                retried = true;
+            }
+        } else {
+            if (serverWasReachable) {
+                Serial.println("Server became unreachable (internet lost)!");
+            }
+            serverWasReachable = false;
+            retried = false;
+        }
+    } else {
+        if (wifiWasConnected) {
+            Serial.println("Wi-Fi connection lost! Switching to OFFLINE mode.");
+            wifiWasConnected = false;
+        }
+        serverWasReachable = false;
+        retried = false;
+        
+        // Attempt to reconnect WiFi
+        attemptWiFiReconnection();
+    }
+  }
 }
 
 void listenForTags() {
@@ -156,6 +257,7 @@ void listenForTags() {
   mfrc522.PCD_StopCrypto1();
 
   delay(2000);
+  showTextOnDisplayReplace("Scan card/\ntag...", 2, true);
 }
 
 bool connectToWiFi() {
@@ -165,20 +267,55 @@ bool connectToWiFi() {
   Serial.println("Connecting to WiFi...");
   unsigned long startAttemptTime = millis();
 
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 20000) {
+  // Wait up to 15 seconds for connection
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 15000) {
     delay(500);
     Serial.print(".");
   }
+  Serial.println();
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\nFailed to connect!");
+    Serial.println("Failed to connect to WiFi!");
     return false;
   }
 
-  Serial.println("\nConnected!");
+  Serial.println("WiFi Connected!");
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
   return true;
+}
+
+void attemptWiFiReconnection() {
+  static unsigned long lastReconnectAttempt = 0;
+  
+  // Only attempt reconnection every 30 seconds to avoid spam
+  if (millis() - lastReconnectAttempt > 30000) {
+    lastReconnectAttempt = millis();
+    
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Attempting WiFi reconnection...");
+      WiFi.reconnect();
+    }
+  }
+}
+
+void configureTimeIfNeeded() {
+  if (!timeConfigured && WiFi.status() == WL_CONNECTED) {
+    Serial.println("Configuring time from NTP server...");
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    
+    // Wait a bit for time to sync
+    delay(2000);
+    
+    struct tm timeinfo;
+    if(getLocalTime(&timeinfo)){
+      Serial.println("Time configured successfully!");
+      Serial.println(getOffsetDateTimeString());
+      timeConfigured = true;
+    } else {
+      Serial.println("Failed to obtain time from NTP server");
+    }
+  }
 }
 
 void makeHttpGetRequest() {
@@ -201,7 +338,9 @@ void makeHttpGetRequest() {
 }
 
 void makeHttpPostRequest(const String& studentNumber, const String& roomName) {
+   Serial.println("Hit makeHttpPostRequest");
     if (WiFi.status() == WL_CONNECTED) {
+       Serial.println("WiFi is connected for API request");
         HTTPClient http;
 
         String timestamp = getOffsetDateTimeString();
@@ -211,11 +350,15 @@ void makeHttpPostRequest(const String& studentNumber, const String& roomName) {
                                "&timestamp=" + urlencode(timestamp);
         Serial.println(urlWithParams);
         http.begin(urlWithParams);
+        http.setTimeout(5000); // 5 second timeout
 
         int httpCode = http.POST("");  // Send POST request with empty body
         String payload = http.getString();
 
-        if(payload.length() > 0) showTextOnDisplayReplace(payload, 1, true);
+        if(payload.length() > 0 && payload.length() < 50) {
+          showTextOnDisplayReplace(payload, 1, true);
+          delay(2000);
+        }
 
         if (httpCode > 0 && httpCode == 200) {
             Serial.print("HTTP Response code: ");
@@ -233,13 +376,15 @@ void makeHttpPostRequest(const String& studentNumber, const String& roomName) {
                payload != "Unable to return student projected data." &&
                payload != "Room not found in database.") 
             { 
-                saveFailedPost(studentNumber, roomName, timestamp); 
+              saveFailedPost(studentNumber, roomName, timestamp); 
             }
         }
 
         http.end();
     } else {
-        Serial.println("WiFi not connected");
+        Serial.println("WiFi not connected - saving to flash memory");
+        showTextOnDisplayReplace("Saved to\nflash", 1, true);
+        delay(1500);
         saveFailedPost(studentNumber, roomName, getOffsetDateTimeString());
     }
 }
@@ -248,22 +393,13 @@ bool isServerReachable() {
     if (WiFi.status() != WL_CONNECTED) return false;
 
     HTTPClient http;
-    http.begin(serverGetUrl);  // your GET URL
+    http.begin(serverGetUrl);
+    http.setTimeout(5000); // 5 second timeout
     int httpCode = http.GET();
     http.end();
 
-    if (httpCode == 200) {
-        Serial.println("Server reachable!");
-        return true;
-    } else {
-        Serial.print("Server not reachable. HTTP code: ");
-        Serial.println(httpCode);
-        return false;
-    }
+    return (httpCode == 200);
 }
-
-
-
 
 String urlencode(String str) {
   String encoded = "";
@@ -297,7 +433,7 @@ String trimString(String str) {
 void readFromBlock(byte blockAddress, byte* blockDataRead, byte bufferBlockSize = 18) {
   //##############################
   //In RFID communication with MIFARE Classic cards, authentication must be performed before reading or writing data blocks. There are two keys per sector on a MIFARE Classic card:
-  // 1. Key
+  // 1. Key A
   // 2. Key B
   // These keys control access to the data in that sector.
   // 0x60 -> authenticate with Key A
@@ -379,8 +515,11 @@ String shortenStringToFitScreen(String text) {
 String getOffsetDateTimeString() {
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
-    return "";
+    // If time not available, create a timestamp using millis() as fallback
+    unsigned long currentMillis = millis();
+    char fallbackTime[30];
+    sprintf(fallbackTime, "OFFLINE-%lu", currentMillis);
+    return String(fallbackTime);
   }
 
   long totalOffsetSeconds = gmtOffset_sec + daylightOffset_sec;
@@ -402,49 +541,59 @@ String getOffsetDateTimeString() {
   return String(isoTime);
 }
 
-
 void saveFailedPost(const String& studentNumber, const String& roomName, const String& timestamp) {
-    // Use student + room + timestamp as unique key
-    String key = studentNumber + "_" + roomName + "_" + timestamp;
+    Serial.println("Saving failed post to flash memory");
+
+    preferences.begin("failed_posts", false);
+
+    // Get the current counter
+    int counter = preferences.getInt("counter", 0);
+    
+    // Increment counter for next post
+    counter++;
+    preferences.putInt("counter", counter);
+
+    // Use simple numeric key (e.g., "p1", "p2", "p3"...)
+    String key = "p" + String(counter);
     String value = studentNumber + "," + roomName + "," + timestamp;
 
-    // Save the failed post itself
-    preferences.putString(key.c_str(), value); 
+    // Save the failed post
+    preferences.putString(key.c_str(), value);
 
-    // Retrieve the existing list of failed keys
-    String keys = preferences.getString("failed_keys", "");
+    // Update the count of failed posts
+    int failedCount = preferences.getInt("count", 0);
+    failedCount++;
+    preferences.putInt("count", failedCount);
 
-    // Add this key to the list only if it's not already there
-    if (keys.indexOf(key) == -1) {
-        if (keys.length() > 0) keys += ",";
-        keys += key;
-        preferences.putString("failed_keys", keys);
-    }
+    Serial.println("Saved failed post with key: " + key);
+    Serial.println("Value: " + value);
+    Serial.println("Total failed posts in flash: " + String(failedCount));
 
-    Serial.println("Saved failed post to flash: " + value);
-    Serial.println("Updated failed_keys list: " + keys);
+    preferences.end();
 }
 
-
-
-
-
 void retryFailedPosts() {
-    String keys = preferences.getString("failed_keys", "");
-    if (keys.length() == 0) {
+    preferences.begin("failed_posts", false);  
+    Serial.println("=== Starting retry of failed posts ===");
+
+    int failedCount = preferences.getInt("count", 0);
+    int counter = preferences.getInt("counter", 0);
+    
+    Serial.println("Failed posts count: " + String(failedCount));
+    Serial.println("Counter: " + String(counter));
+
+    if (failedCount == 0) {
         Serial.println("No failed posts to retry.");
+        preferences.end();
         return;
     }
 
     Serial.println("Retrying failed posts...");
-    int start = 0;
-    String newKeys = "";  // Rebuild list of posts that still failed
+    int successCount = 0;
 
-    while (start < keys.length()) {
-        int comma = keys.indexOf(',', start);
-        if (comma == -1) comma = keys.length();
-
-        String key = keys.substring(start, comma);
+    // Iterate through all possible keys from 1 to counter
+    for (int i = 1; i <= counter; i++) {
+        String key = "p" + String(i);
         String value = preferences.getString(key.c_str(), "");
 
         if (value.length() > 0) {
@@ -454,7 +603,7 @@ void retryFailedPosts() {
             String roomName = value.substring(firstComma + 1, secondComma);
             String timestamp = value.substring(secondComma + 1);
 
-            Serial.println("Retrying: " + value);
+            Serial.println("Retrying key " + key + ": " + value);
 
             // Try to send again
             HTTPClient http;
@@ -463,27 +612,36 @@ void retryFailedPosts() {
                                    "&roomName=" + urlencode(roomName) + 
                                    "&timestamp=" + urlencode(timestamp);
             http.begin(urlWithParams);
+            http.setTimeout(5000); // 5 second timeout
             int httpCode = http.POST("");
+            String payload = http.getString();
             http.end();
 
             if (httpCode == 200) {
-                Serial.println("Retry successful for key: " + key);
+                Serial.println("✓ Retry successful for key: " + key);
                 preferences.remove(key.c_str());
+                successCount++;
             } else {
-                Serial.println("Retry failed again for key: " + key);
-                // Keep this one for next retry
-                if (newKeys.length() > 0) newKeys += ",";
-                newKeys += key;
+                Serial.println("✗ Retry failed for key: " + key + ", HTTP code: " + String(httpCode));
             }
+            
+            delay(100); // Small delay between retries
         }
-
-        start = comma + 1;
     }
 
-    // Save only those that still failed
-    preferences.putString("failed_keys", newKeys);
-    Serial.println("Retry process complete.");
+    // Update the count
+    int newCount = failedCount - successCount;
+    preferences.putInt("count", newCount);
+
+    Serial.println("=== Retry complete ===");
+    Serial.println("Successful: " + String(successCount) + ", Remaining: " + String(newCount));
+
+    preferences.end();
 }
 
-
-
+void clearAllFailedPosts() {
+    preferences.begin("failed_posts", false);
+    preferences.clear();  // Clears entire namespace
+    preferences.end();
+    Serial.println("All failed posts cleared from flash memory.");
+}
