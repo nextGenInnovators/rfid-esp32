@@ -355,7 +355,7 @@ void makeHttpPostRequest(const String& studentNumber, const String& roomName) {
         int httpCode = http.POST("");  // Send POST request with empty body
         String payload = http.getString();
 
-        if(payload.length() > 0 && payload.length() < 50) {
+        if(payload.length() > 0) {
           showTextOnDisplayReplace(payload, 1, true);
           delay(2000);
         }
