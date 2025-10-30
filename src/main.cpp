@@ -28,14 +28,14 @@ static bool serverWasReachable = false;
 static bool timeConfigured = false;
 
 // WiFi credentials
-const char* ssid = "Galaxy A30s4929";
-const char* password = "amzachaane";
-// const char* ssid = "VC-1012-9086";
-// const char* password = "Jbj52fjnH";
+// const char* ssid = "Galaxy A30s4929";
+// const char* password = "amzachaane";
+const char* ssid = "VC-1012-9086";
+const char* password = "Jbj52fjnH";
 
 // Server URLs
-const char* serverPostUrl = "https://api.sagestudy.co.za/api/v1/attendance/addAttendance"; 
-const char* serverGetUrl = "https://api.sagestudy.co.za/api/v1/health/"; 
+const char* serverPostUrl = "http://192.168.18.106:8080/api/v1/attendance/addAttendance"; 
+const char* serverGetUrl = "http://192.168.18.106:8080/api/v1/health/"; 
 
 const char* roomName = "Lecture 4"; 
 
@@ -181,6 +181,7 @@ void loop() {
   // Periodic connectivity and retry check every 10 seconds
   static unsigned long lastCheck = 0;
   if (millis() - lastCheck > 10000) {
+    Serial.println("checking wifi status");
     lastCheck = millis();
 
     // Check WiFi status
@@ -235,7 +236,8 @@ void listenForTags() {
   }
 
   Serial.print("----------------\nCard UID: ");
-  MFRC522Debug::PrintUID(Serial, (mfrc522.uid));
+  // MFRC522Debug::PrintUID(Serial, (mfrc522.uid)); // use in arduino IDE
+  MFRC522Debug::PICC_DumpDetailsToSerial(mfrc522, Serial, &(mfrc522.uid)); // use in PlatformIO
   Serial.println();
 
   readFromBlock(studentNumberBlockAddress, studentNumberBlockDataRead, bufferblocksize);
@@ -302,6 +304,7 @@ void attemptWiFiReconnection() {
 void configureTimeIfNeeded() {
   if (!timeConfigured && WiFi.status() == WL_CONNECTED) {
     Serial.println("Configuring time from NTP server...");
+    showTextOnDisplayReplace("Configuring time from NTP server...", 1, true);
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
     
     // Wait a bit for time to sync
@@ -310,10 +313,12 @@ void configureTimeIfNeeded() {
     struct tm timeinfo;
     if(getLocalTime(&timeinfo)){
       Serial.println("Time configured successfully!");
+      showTextOnDisplayReplace("Time configured successfully!", 1, true);
       Serial.println(getOffsetDateTimeString());
       timeConfigured = true;
     } else {
       Serial.println("Failed to obtain time from NTP server");
+      showTextOnDisplayReplace("Failed to obtain time from NTP server", 1, true);
     }
   }
 }
@@ -383,7 +388,7 @@ void makeHttpPostRequest(const String& studentNumber, const String& roomName) {
         http.end();
     } else {
         Serial.println("WiFi not connected - saving to flash memory");
-        showTextOnDisplayReplace("Saved to\nflash", 1, true);
+        showTextOnDisplayReplace("Saved to\nflash", 2, true);
         delay(1500);
         saveFailedPost(studentNumber, roomName, getOffsetDateTimeString());
     }
@@ -514,13 +519,11 @@ String shortenStringToFitScreen(String text) {
 
 String getOffsetDateTimeString() {
   struct tm timeinfo;
-  if(!getLocalTime(&timeinfo)){
-    // If time not available, create a timestamp using millis() as fallback
-    unsigned long currentMillis = millis();
-    char fallbackTime[30];
-    sprintf(fallbackTime, "OFFLINE-%lu", currentMillis);
-    return String(fallbackTime);
-  }
+  time_t now;
+
+  // Always get current time from RTC regardless of whether the time was synced with an NTP server
+  time(&now);
+  localtime_r(&now, &timeinfo);
 
   long totalOffsetSeconds = gmtOffset_sec + daylightOffset_sec;
   int offsetHours = totalOffsetSeconds / 3600;
