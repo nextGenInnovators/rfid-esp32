@@ -8,7 +8,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include "time.h"
+#include "RTClib.h"
 #include <Preferences.h>
 
 
@@ -20,16 +20,19 @@
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
+// RTC module
+RTC_DS3231 rtc;
+
 Preferences preferences;
 
 static bool retried = false;
 static bool wifiWasConnected = false;
 static bool serverWasReachable = false;
-static bool timeConfigured = false;
+static bool rtcInitialized = false;
 
 // WiFi credentials
-// const char* ssid = "Galaxy A30s4929";
-// const char* password = "amzachaane";
+// const char* ssid = "DESKTOP-6DO970B 1565";
+// const char* password = "mbeuwifi";
 const char* ssid = "VC-1012-9086";
 const char* password = "Jbj52fjnH";
 
@@ -39,9 +42,8 @@ const char* serverGetUrl = "http://192.168.18.106:8080/api/v1/health/";
 
 const char* roomName = "Lecture 4"; 
 
-const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 7200; // +2 hours
-const int   daylightOffset_sec = 0;
+// Time zone offset in hours (change this to match your timezone)
+const int timeZoneOffsetHours = 0; // No offset - RTC already set to local time
 
 // Learn more about using SPI/I2C or check the pin assigment for your board: https://github.com/OSSLibraries/Arduino_MFRC522v2#pin-layout
 MFRC522DriverPinSimple ss_pin(5);
@@ -79,8 +81,10 @@ void saveFailedPost(const String& studentNumber, const String& roomName, const S
 void retryFailedPosts();
 bool isServerReachable();
 void clearAllFailedPosts();
-void configureTimeIfNeeded();
+void initializeRTC();
 void attemptWiFiReconnection();
+void setRTCTime(int year, int month, int day, int hour, int minute, int second);
+void printRTCStatus();
 // ############################################
 
 void setup() {
@@ -108,6 +112,10 @@ void setup() {
   delay(1000);
   showTextOnDisplayReplace("Starting...", 2, true);
 
+  // Initialize RTC
+  initializeRTC();
+  printRTCStatus();
+
   // Initialize preferences
   preferences.begin("failed_posts", false);
   int savedCount = preferences.getInt("count", 0);
@@ -126,9 +134,6 @@ void setup() {
     Serial.println("WiFi connected successfully!");
     showTextOnDisplayReplace("WiFi OK!", 2, true);
     delay(1000);
-    
-    // Configure time
-    configureTimeIfNeeded();
     
   } else {
     wifiWasConnected = false;
@@ -160,9 +165,6 @@ void setup() {
         Serial.println(WiFi.localIP());
         wifiWasConnected = true;
         retried = false;
-        
-        // Configure time if not already done
-        configureTimeIfNeeded();
         break;
 
       default:
@@ -190,7 +192,6 @@ void loop() {
             Serial.println("WiFi reconnected!");
             wifiWasConnected = true;
             retried = false;
-            configureTimeIfNeeded(); // Configure time when WiFi comes back
         }
 
         // Check server reachability
@@ -301,26 +302,31 @@ void attemptWiFiReconnection() {
   }
 }
 
-void configureTimeIfNeeded() {
-  if (!timeConfigured && WiFi.status() == WL_CONNECTED) {
-    Serial.println("Configuring time from NTP server...");
-    showTextOnDisplayReplace("Configuring time from NTP server...", 1, true);
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-    
-    // Wait a bit for time to sync
+void initializeRTC() {
+  Serial.println("Initializing RTC module...");
+  showTextOnDisplayReplace("Init RTC...", 2, true);
+  
+  if (!rtc.begin()) {
+    Serial.println("Couldn't find RTC module!");
+    showTextOnDisplayReplace("RTC ERROR!", 2, true);
+    Serial.flush();
     delay(2000);
-    
-    struct tm timeinfo;
-    if(getLocalTime(&timeinfo)){
-      Serial.println("Time configured successfully!");
-      showTextOnDisplayReplace("Time configured successfully!", 1, true);
-      Serial.println(getOffsetDateTimeString());
-      timeConfigured = true;
-    } else {
-      Serial.println("Failed to obtain time from NTP server");
-      showTextOnDisplayReplace("Failed to obtain time from NTP server", 1, true);
-    }
+    return;
   }
+
+  if (rtc.lostPower()) {
+    Serial.println("RTC lost power, setting time to compile time!");
+    showTextOnDisplayReplace("RTC power\nlost!", 2, true);
+    // Set the RTC to the date & time this sketch was compiled
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    delay(1000);
+  }
+
+  rtcInitialized = true;
+  Serial.println("RTC initialized successfully!");
+  showTextOnDisplayReplace("RTC OK!", 2, true);
+  Serial.println("Current RTC time: " + getOffsetDateTimeString());
+  delay(1000);
 }
 
 void makeHttpGetRequest() {
@@ -518,26 +524,26 @@ String shortenStringToFitScreen(String text) {
 }
 
 String getOffsetDateTimeString() {
-  struct tm timeinfo;
-  time_t now;
+  if (!rtcInitialized) {
+    return "RTC_NOT_INITIALIZED";
+  }
 
-  // Always get current time from RTC regardless of whether the time was synced with an NTP server
-  time(&now);
-  localtime_r(&now, &timeinfo);
-
-  long totalOffsetSeconds = gmtOffset_sec + daylightOffset_sec;
-  int offsetHours = totalOffsetSeconds / 3600;
-  int offsetMinutes = (abs(totalOffsetSeconds) % 3600) / 60;
-
+  DateTime now = rtc.now();
+  
+  // Apply timezone offset
+  DateTime localTime = now + TimeSpan(0, timeZoneOffsetHours, 0, 0);
+  
+  int offsetMinutes = 0; // No daylight savings for simplicity
+  
   char isoTime[30];
   sprintf(isoTime, "%04d-%02d-%02dT%02d:%02d:%02d%+03d:%02d",
-      timeinfo.tm_year + 1900,
-      timeinfo.tm_mon + 1,
-      timeinfo.tm_mday,
-      timeinfo.tm_hour,
-      timeinfo.tm_min,
-      timeinfo.tm_sec,
-      offsetHours,
+      localTime.year(),
+      localTime.month(),
+      localTime.day(),
+      localTime.hour(),
+      localTime.minute(),
+      localTime.second(),
+      timeZoneOffsetHours,
       offsetMinutes
   );
 
@@ -647,4 +653,31 @@ void clearAllFailedPosts() {
     preferences.clear();  // Clears entire namespace
     preferences.end();
     Serial.println("All failed posts cleared from flash memory.");
+}
+
+void setRTCTime(int year, int month, int day, int hour, int minute, int second) {
+    if (rtcInitialized) {
+        rtc.adjust(DateTime(year, month, day, hour, minute, second));
+        Serial.println("RTC time manually set to: " + getOffsetDateTimeString());
+        showTextOnDisplayReplace("Time\nSet!", 2, true);
+        delay(1500);
+    } else {
+        Serial.println("RTC not initialized - cannot set time");
+    }
+}
+
+void printRTCStatus() {
+    if (!rtcInitialized) {
+        Serial.println("RTC Status: NOT INITIALIZED");
+        return;
+    }
+    
+    DateTime now = rtc.now();
+    Serial.println("=== RTC Status ===");
+    Serial.println("RTC Time: " + getOffsetDateTimeString());
+    Serial.print("Temperature: ");
+    Serial.print(rtc.getTemperature());
+    Serial.println("°C");
+    Serial.println("RTC Lost Power: " + String(rtc.lostPower() ? "YES" : "NO"));
+    Serial.println("================");
 }
