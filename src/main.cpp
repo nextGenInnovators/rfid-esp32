@@ -10,6 +10,7 @@
 #include <Adafruit_SSD1306.h>
 #include "RTClib.h"
 #include <Preferences.h>
+#include <time.h>
 
 
 #define LED_BUILTIN 2
@@ -35,6 +36,8 @@ static bool rtcInitialized = false;
 // const char* password = "mbeuwifi";
 const char* ssid = "VC-1012-9086";
 const char* password = "Jbj52fjnH";
+// const char* ssid = "OPPO A78 s9jt";
+// const char* password = "efin9598";
 
 // Server URLs
 const char* serverPostUrl = "http://192.168.18.106:8080/api/v1/attendance/addAttendance"; 
@@ -42,8 +45,8 @@ const char* serverGetUrl = "http://192.168.18.106:8080/api/v1/health/";
 
 const char* roomName = "Lecture 4"; 
 
-// Time zone offset in hours (change this to match your timezone)
-const int timeZoneOffsetHours = 0; // No offset - RTC already set to local time
+// Time zone offset in hours (South Africa is UTC+2)
+const int timeZoneOffsetHours = 2;
 
 // Learn more about using SPI/I2C or check the pin assigment for your board: https://github.com/OSSLibraries/Arduino_MFRC522v2#pin-layout
 MFRC522DriverPinSimple ss_pin(5);
@@ -85,6 +88,7 @@ void initializeRTC();
 void attemptWiFiReconnection();
 void setRTCTime(int year, int month, int day, int hour, int minute, int second);
 void printRTCStatus();
+void syncTimeFromNTP();
 // ############################################
 
 void setup() {
@@ -135,6 +139,9 @@ void setup() {
     showTextOnDisplayReplace("WiFi OK!", 2, true);
     delay(1000);
     
+    // Sync time from NTP server
+    syncTimeFromNTP();
+    
   } else {
     wifiWasConnected = false;
     Serial.println("WiFi connection failed. Proceeding in OFFLINE mode.");
@@ -183,7 +190,6 @@ void loop() {
   // Periodic connectivity and retry check every 10 seconds
   static unsigned long lastCheck = 0;
   if (millis() - lastCheck > 10000) {
-    Serial.println("checking wifi status");
     lastCheck = millis();
 
     // Check WiFi status
@@ -192,6 +198,9 @@ void loop() {
             Serial.println("WiFi reconnected!");
             wifiWasConnected = true;
             retried = false;
+            
+            // Sync time when WiFi reconnects
+            syncTimeFromNTP();
         }
 
         // Check server reachability
@@ -315,11 +324,13 @@ void initializeRTC() {
   }
 
   if (rtc.lostPower()) {
-    Serial.println("RTC lost power, setting time to compile time!");
-    showTextOnDisplayReplace("RTC power\nlost!", 2, true);
-    // Set the RTC to the date & time this sketch was compiled
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    delay(1000);
+    Serial.println("WARNING: RTC lost power!");
+    Serial.println("Time will be synced from NTP when WiFi connects");
+    showTextOnDisplayReplace("RTC power\nlost!\nWill sync", 2, true);
+    delay(2000);
+    
+    // Set a default time for now (will be corrected by NTP)
+    rtc.adjust(DateTime(2024, 1, 1, 0, 0, 0));
   }
 
   rtcInitialized = true;
@@ -327,6 +338,40 @@ void initializeRTC() {
   showTextOnDisplayReplace("RTC OK!", 2, true);
   Serial.println("Current RTC time: " + getOffsetDateTimeString());
   delay(1000);
+}
+
+void syncTimeFromNTP() {
+  if (WiFi.status() == WL_CONNECTED && rtcInitialized) {
+    Serial.println("Syncing time from NTP server...");
+    showTextOnDisplayReplace("Syncing\ntime...", 2, true);
+    
+    // Configure NTP with your timezone (UTC+2 = 7200 seconds, no DST = 0)
+    configTime(7200, 0, "pool.ntp.org", "time.nist.gov");
+    
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 10000)) { // 10 second timeout
+      // Set RTC to the time from NTP
+      rtc.adjust(DateTime(
+        timeinfo.tm_year + 1900,
+        timeinfo.tm_mon + 1,
+        timeinfo.tm_mday,
+        timeinfo.tm_hour,
+        timeinfo.tm_min,
+        timeinfo.tm_sec
+      ));
+      
+      Serial.println("✓ RTC time synced from NTP!");
+      Serial.println("New time: " + getOffsetDateTimeString());
+      showTextOnDisplayReplace("Time\nSynced!", 2, true);
+      delay(1500);
+    } else {
+      Serial.println("✗ Failed to get time from NTP");
+      showTextOnDisplayReplace("NTP sync\nfailed", 2, true);
+      delay(1500);
+    }
+  } else {
+    Serial.println("Cannot sync time - WiFi not connected or RTC not initialized");
+  }
 }
 
 void makeHttpGetRequest() {
@@ -530,21 +575,17 @@ String getOffsetDateTimeString() {
 
   DateTime now = rtc.now();
   
-  // Apply timezone offset
-  DateTime localTime = now + TimeSpan(0, timeZoneOffsetHours, 0, 0);
-  
-  int offsetMinutes = 0; // No daylight savings for simplicity
+  // The RTC now stores local time (UTC+2) after NTP sync
+  // No need to add offset since NTP already gave us local time
   
   char isoTime[30];
-  sprintf(isoTime, "%04d-%02d-%02dT%02d:%02d:%02d%+03d:%02d",
-      localTime.year(),
-      localTime.month(),
-      localTime.day(),
-      localTime.hour(),
-      localTime.minute(),
-      localTime.second(),
-      timeZoneOffsetHours,
-      offsetMinutes
+  sprintf(isoTime, "%04d-%02d-%02dT%02d:%02d:%02d+02:00",
+      now.year(),
+      now.month(),
+      now.day(),
+      now.hour(),
+      now.minute(),
+      now.second()
   );
 
   return String(isoTime);
